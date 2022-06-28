@@ -1,0 +1,31 @@
+[package]
+name = "webrtc-multi"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+webrtc = "*"
+
+anyhow = "*"
+serde = "*"
+serde_json = "1.0.53"
+serde_derive = "*"
+lazy_static = "*"
+base64 = "*"
+hyper = { version = "0.14.16", features = ["full"] }
+byte-slice-cast = "*"
+futures = "0.3"
+
+tokio = { version = "*", features = ["full"] }
+tokio-util = { version = "*", features = ["full"] }
+
+bastion = { git = "https://github.com/bastion-rs/bastion.git", features = ["tokio-runtime"] }
+async-tungstenite = { version = "0.10", features = ["async-std-runtime", "async-native-tls"] }
+nats = "*"
+
+gst = { package = "gstreamer", version = "0.17", features = ["v1_20"] }
+gst-sdp = { package = "gstreamer-sdp", version = "0.17", features = ["v1_20"] }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.17" }
+gst-app = { package = "gstreamer-app", version = "0.17" }
