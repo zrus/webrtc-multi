@@ -25,8 +25,6 @@ use webrtc::{
     rtp_transceiver::{
         rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
         rtp_receiver::RTCRtpReceiver,
-        rtp_transceiver_direction::RTCRtpTransceiverDirection,
-        RTCRtpTransceiverInit,
     },
     track::track_remote::TrackRemote,
 };
@@ -35,7 +33,7 @@ use webrtc::{
 async fn main() {
     let conn = nats::asynk::connect("demo.nats.io").await.unwrap();
     let conn = Arc::new(conn);
-    for id in 1..=1 {
+    for id in 1..=50 {
         let conn_cl = Arc::clone(&conn);
         spawn(async move {
             println!("Client {id} running..");
@@ -112,10 +110,7 @@ async fn main() {
                 peer_connection
                     .add_transceiver_from_kind(
                         RTPCodecType::Video,
-                        &[RTCRtpTransceiverInit {
-                            direction: RTCRtpTransceiverDirection::Recvonly,
-                            send_encodings: vec![],
-                        }],
+                        &[],
                     )
                     .await
                     .expect("cannot add video transceiver");
@@ -146,7 +141,7 @@ async fn main() {
                                                 sender_ssrc: 0,
                                                 media_ssrc,
                                             })]).await.map_err(|e| eprintln!("{e}"));
-                                        }else {
+                                        } else {
                                             break;
                                         }
                                     }
@@ -165,8 +160,10 @@ async fn main() {
                                         tokio::select! {
                                             result = track.read_rtp() => {
                                                 if let Ok((rtp_packet, _)) = result {
-                                                    let mut writer = h264_writer.lock().await;
-                                                    writer.write_rtp(&rtp_packet).expect("cannot write rtp to file");
+                                                    if rtp_packet.payload.len() > 2 {
+                                                        let mut writer = h264_writer.lock().await;
+                                                        writer.write_rtp(&rtp_packet).expect("cannot write rtp to file");
+                                                    }
                                                 } else {
                                                     println!("file closing begin after read_rtp error");
                                                     let mut w = h264_writer.lock().await;
@@ -238,6 +235,7 @@ async fn main() {
                         println!("Peer Connection {id} State has changed: {}", s);
 
                         if s == RTCPeerConnectionState::Failed {
+                            notify_tx.notify_waiters();
                             println!("Peer Connection {id} has gone to failed exiting");
                             let _ = done_tx1.try_send(());
                         }

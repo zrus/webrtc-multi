@@ -5,8 +5,12 @@ use std::{
 
 use bastion::prelude::*;
 use gst::prelude::{Cast, ElementExt, ElementExtManual};
+use tokio::net::UdpSocket;
 
 use crate::webrtc::{IceMessage as WIceMsg, SdpMessage as WSdpMsg, WebRTC};
+
+#[derive(Debug)]
+pub struct ShutdownMessage(pub u8);
 
 #[derive(Debug)]
 pub struct StopMessage;
@@ -97,12 +101,31 @@ impl Camera {
 async fn executor(ctx: BastionContext, id: u8) -> Result<(), ()> {
     let _ = Pipeline::run(id)?;
     let mut webrtc_list = HashSet::new();
+
+    let (rtp_tx, _) = tokio::sync::broadcast::channel(32);
+    let rtp_tx = Arc::new(rtp_tx);
+    let listener = UdpSocket::bind(format!("127.0.0.1:5{id:0>3}"))
+        .await
+        .expect("cannot bind to local udp socket");
+    let rtp_tx_cl = Arc::clone(&rtp_tx);
+    let handler = spawn!(async move {
+        let mut inbound_rtp_packet = vec![0u8; 1600];
+        while let Ok((n, _)) = listener.recv_from(&mut inbound_rtp_packet).await {
+            rtp_tx_cl.send(inbound_rtp_packet[..n].to_vec()).map_err(|e| eprintln!("{e}")).expect("");
+        }
+    });
+
+    let spawn_rx = move || -> tokio::sync::broadcast::Receiver<_> {
+        rtp_tx.subscribe()
+    };
+
     loop {
         MessageHandler::new(ctx.recv().await?)
             .on_tell(|msg: SdpMessage, _| {
                 let SdpMessage { device_id, sdp } = msg;
                 if webrtc_list.insert(device_id) {
-                    WebRTC::run(ctx.supervisor().unwrap(), device_id)
+                    let rtp_rx = spawn_rx();
+                    WebRTC::run(ctx.supervisor().unwrap(), device_id, id, rtp_rx)
                         .expect("cannot create webrtc actor");
                     Distributor::named(format!("webrtc_{device_id}_actor"))
                         .tell_one(WSdpMsg(sdp))
@@ -117,11 +140,22 @@ async fn executor(ctx: BastionContext, id: u8) -> Result<(), ()> {
                         .expect("cannot send ice to webrtc actor");
                 }
             })
+            .on_tell(|msg: ShutdownMessage, _| {
+                webrtc_list.remove(&msg.0);
+                if webrtc_list.is_empty() {
+                    ctx.supervisor()
+                        .unwrap()
+                        .kill()
+                        .expect("cannot kill camera actor and its children");
+                    handler.cancel();    
+                }
+            })
             .on_tell(|_: StopMessage, _| {
                 ctx.supervisor()
                     .unwrap()
                     .kill()
                     .expect("cannot kill camera actor and its children");
+                handler.cancel();
             });
     }
 }

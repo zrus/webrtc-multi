@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bastion::prelude::*;
 use serde_json::json;
-use tokio::{net::UdpSocket, sync::Mutex};
+use tokio::sync::Mutex;
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
@@ -18,14 +18,14 @@ use webrtc::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
     track::track_local::{
         track_local_static_rtp::TrackLocalStaticRTP, TrackLocal, TrackLocalWriter,
     },
     Error,
 };
 
-use crate::nats_actor::PublishMessage;
+use crate::{nats_actor::PublishMessage, camera::ShutdownMessage};
 
 #[derive(Debug)]
 pub struct SdpMessage(pub String);
@@ -34,14 +34,14 @@ pub struct IceMessage(pub String);
 
 pub struct WebRTC;
 impl WebRTC {
-    pub fn run(parent: &SupervisorRef, device_id: u8) -> Result<ChildrenRef, ()> {
+    pub fn run(parent: &SupervisorRef, device_id: u8, id: u8, rtp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>) -> Result<ChildrenRef, ()> {
         let reff = parent.children(|c| {
             c.with_callbacks(
                 Callbacks::new()
                     .with_after_start(move || println!("WebRTC actor {device_id} started")),
             )
             .with_distributor(Distributor::named(format!("webrtc_{device_id}_actor")))
-            .with_exec(move |ctx| executor(ctx, device_id))
+            .with_exec(move |ctx| executor(ctx, device_id, id, rtp_rx.resubscribe()))
         });
         run! { async {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -50,7 +50,7 @@ impl WebRTC {
     }
 }
 
-async fn executor(ctx: BastionContext, device_id: u8) -> Result<(), ()> {
+async fn executor(ctx: BastionContext, device_id: u8, id: u8, mut rtp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>) -> Result<(), ()> {
     let pending_candidates: Arc<Mutex<Vec<RTCIceCandidate>>> = Arc::new(Mutex::new(vec![]));
 
     let config = RTCConfiguration {
@@ -64,6 +64,20 @@ async fn executor(ctx: BastionContext, device_id: u8) -> Result<(), ()> {
     let mut m = MediaEngine::default();
     m.register_default_codecs()
         .expect("cannot register default codecs");
+    m.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 100,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    ).expect("cannot register on H264 profile");
 
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)
@@ -138,15 +152,11 @@ async fn executor(ctx: BastionContext, device_id: u8) -> Result<(), ()> {
         }))
         .await;
 
-    let listener = UdpSocket::bind(format!("127.0.0.1:5{device_id:0>3}"))
-        .await
-        .expect("cannot bind to local udp socket");
-
     let done_tx2 = done_tx.clone();
+    
     let handler = spawn!(async move {
-        let mut inbound_rtp_packet = vec![0u8; 1600]; // UDP MTU
-        while let Ok((n, _)) = listener.recv_from(&mut inbound_rtp_packet).await {
-            if let Err(err) = video_track.write(&inbound_rtp_packet[..n]).await {
+        while let Ok(value) = rtp_rx.recv().await {
+            if let Err(err) = video_track.write(&value).await {
                 if Error::ErrClosedPipe == err {
                     println!("the peerConnection has been closed");
                 } else {
@@ -156,6 +166,7 @@ async fn executor(ctx: BastionContext, device_id: u8) -> Result<(), ()> {
                 return;
             }
         }
+        println!("{device_id} stopped!");
     });
 
     let pc_clone = Arc::downgrade(&peer_connection);
@@ -231,6 +242,7 @@ async fn executor(ctx: BastionContext, device_id: u8) -> Result<(), ()> {
     }
 
     handler.cancel();
+    Distributor::named(format!("cam_{id}_actor")).tell_one(ShutdownMessage(device_id)).expect("cannot send message to its owner");
 
     Ok(())
 }
