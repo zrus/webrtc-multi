@@ -25,7 +25,7 @@ use webrtc::{
     Error,
 };
 
-use crate::{nats_actor::PublishMessage, camera::ShutdownMessage};
+use crate::{camera::ShutdownMessage, nats_actor::PublishMessage};
 
 #[derive(Debug)]
 pub struct SdpMessage(pub String);
@@ -34,7 +34,12 @@ pub struct IceMessage(pub String);
 
 pub struct WebRTC;
 impl WebRTC {
-    pub fn run(parent: &SupervisorRef, device_id: u8, id: u8, rtp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>) -> Result<ChildrenRef, ()> {
+    pub fn run(
+        parent: &SupervisorRef,
+        device_id: u8,
+        id: u8,
+        rtp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    ) -> Result<ChildrenRef, ()> {
         let reff = parent.children(|c| {
             c.with_callbacks(
                 Callbacks::new()
@@ -50,7 +55,12 @@ impl WebRTC {
     }
 }
 
-async fn executor(ctx: BastionContext, device_id: u8, id: u8, mut rtp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>) -> Result<(), ()> {
+async fn executor(
+    ctx: BastionContext,
+    device_id: u8,
+    id: u8,
+    mut rtp_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+) -> Result<(), ()> {
     let pending_candidates: Arc<Mutex<Vec<RTCIceCandidate>>> = Arc::new(Mutex::new(vec![]));
 
     let config = RTCConfiguration {
@@ -77,7 +87,8 @@ async fn executor(ctx: BastionContext, device_id: u8, id: u8, mut rtp_rx: tokio:
             ..Default::default()
         },
         RTPCodecType::Video,
-    ).expect("cannot register on H264 profile");
+    )
+    .expect("cannot register on H264 profile");
 
     let mut registry = Registry::new();
     registry = register_default_interceptors(registry, &mut m)
@@ -153,7 +164,7 @@ async fn executor(ctx: BastionContext, device_id: u8, id: u8, mut rtp_rx: tokio:
         .await;
 
     let done_tx2 = done_tx.clone();
-    
+
     let handler = spawn!(async move {
         while let Ok(value) = rtp_rx.recv().await {
             if let Err(err) = video_track.write(&value).await {
@@ -242,7 +253,9 @@ async fn executor(ctx: BastionContext, device_id: u8, id: u8, mut rtp_rx: tokio:
     }
 
     handler.cancel();
-    Distributor::named(format!("cam_{id}_actor")).tell_one(ShutdownMessage(device_id)).expect("cannot send message to its owner");
+    Distributor::named(format!("cam_{id}_actor"))
+        .tell_one(ShutdownMessage(device_id))
+        .expect("cannot send message to its owner");
 
     Ok(())
 }

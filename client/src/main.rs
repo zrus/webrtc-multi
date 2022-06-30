@@ -33,7 +33,7 @@ use webrtc::{
 async fn main() {
     let conn = nats::asynk::connect("demo.nats.io").await.unwrap();
     let conn = Arc::new(conn);
-    for id in 1..=50 {
+    for id in 1..=5 {
         let conn_cl = Arc::clone(&conn);
         spawn(async move {
             println!("Client {id} running..");

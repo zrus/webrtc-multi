@@ -111,13 +111,14 @@ async fn executor(ctx: BastionContext, id: u8) -> Result<(), ()> {
     let handler = spawn!(async move {
         let mut inbound_rtp_packet = vec![0u8; 1600];
         while let Ok((n, _)) = listener.recv_from(&mut inbound_rtp_packet).await {
-            rtp_tx_cl.send(inbound_rtp_packet[..n].to_vec()).map_err(|e| eprintln!("{e}")).expect("");
+            rtp_tx_cl
+                .send(inbound_rtp_packet[..n].to_vec())
+                .map_err(|e| eprintln!("{e}"))
+                .expect("");
         }
     });
 
-    let spawn_rx = move || -> tokio::sync::broadcast::Receiver<_> {
-        rtp_tx.subscribe()
-    };
+    let spawn_rx = move || -> tokio::sync::broadcast::Receiver<_> { rtp_tx.subscribe() };
 
     loop {
         MessageHandler::new(ctx.recv().await?)
@@ -147,10 +148,13 @@ async fn executor(ctx: BastionContext, id: u8) -> Result<(), ()> {
                         .unwrap()
                         .kill()
                         .expect("cannot kill camera actor and its children");
-                    handler.cancel();    
+                    handler.cancel();
                 }
             })
             .on_tell(|_: StopMessage, _| {
+                Distributor::named(format!("cam_{id}_actor"))
+                    .unsubscribe(ctx.current().clone())
+                    .expect("cannot unsubscribe");
                 ctx.supervisor()
                     .unwrap()
                     .kill()
